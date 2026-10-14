@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>合成游戏</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#f6b258}
+#score{font-size:26px;text-align:center;margin:10px;color:#703800}
+#gameBox{width:400px;height:600px;border:2px solid #9b5724;margin:0 auto;position:relative;background:#f9b85c;overflow:hidden}
+#gameOver{position:absolute;top:200px;left:50%;transform:translateX(-50%);background:#c83c20;color:#fff;padding:15px;font-size:28px;display:none;border-radius:8px}
+#resetBtn{display:none;position:absolute;top:320px;left:50%;transform:translateX(-50%);padding:10px 20px;font-size:20px;border-radius:6px;border:none;background:#3377dd;color:white}
+canvas{display:block}
+</style>
+</head>
+<body>
+<div id="score">分数：0</div>
+<div id="gameBox">
+<canvas id="c" width="400" height="600"></canvas>
+<div id="gameOver">游戏结束</div>
+<button id="resetBtn">重新开始</button>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const resetBtn = document.getElementById('resetBtn');
+
+let balls = [];
+let score = 0;
+let gameEnd = false;
+let hasStarted = false;
+let nextLevel = Math.floor(Math.random() * 3);
+let overTimer = 0;
+
+const deadLineY = 180;
+const gravity = 0.35;
+const wall = {left:10, right:390, top:0, bottom:590};
+
+// ==========11级图片配置==========
+const fruit = [
+    {r:18, img:"assets/images/0.png"},
+    {r:26, img:"assets/images/1.png"},
+    {r:34, img:"assets/images/2.png"},
+    {r:42, img:"assets/images/3.png"},
+    {r:50, img:"assets/images/4.png"},
+    {r:58, img:"assets/images/5.png"},
+    {r:66, img:"assets/images/6.png"},
+    {r:74, img:"assets/images/7.png"},
+    {r:82, img:"assets/images/8.png"},
+    {r:90, img:"assets/images/9.png"},
+    {r:98, img:"assets/images/10.png"}
+];
+
+const fruitImages = [];
+for(let i = 0; i < fruit.length; i++){
+    const img = new Image();
+    img.src = fruit[i].img;
+    fruitImages.push(img);
+}
+
+// 音效
+const soundDrop = new Audio("assets/sound/drop.mp3");
+const soundMerge = new Audio("assets/sound/merge.mp3");
+const soundBig = new Audio("assets/sound/big.mp3");
+soundDrop.volume = 0.3;
+soundMerge.volume = 0.35;
+soundBig.volume = 0.4;
+
+class Fruit{
+    constructor(x,y,level){
+        this.x = x;
+        this.y = y;
+        this.vx = 0;
+        this.vy = 0;
+        this.level = level;
+        this.r = fruit[level].r;
+        this.image = fruitImages[level];
+        this.alive = true;
+    }
+
+    update(){
+        this.vy += gravity;
+        this.x += this.vx;
+        this.y += this.vy;
+
+        //墙壁碰撞
+        if(this.x - this.r < wall.left){
+            this.x = wall.left + this.r;
+            this.vx *= -0.6;
+        }
+        if(this.x + this.r > wall.right){
+            this.x = wall.right - this.r;
+            this.vx *= -0.6;
+        }
+        //底部碰撞
+        if(this.y + this.r > wall.bottom){
+            this.y = wall.bottom - this.r;
+            this.vy *= -0.3;
+            this.vx *= 0.8;
+        }
+    }
+
+    draw(){
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2);
+        ctx.clip();
+
+        if(this.image && this.image.complete){
+            ctx.drawImage(this.image, this.x - this.r, this.y - this.r, this.r * 2, this.r * 2);
+        }else{
+            ctx.fillStyle = "#aaaaaa";
+            ctx.fill();
+        }
+        ctx.restore();
+
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2);
+        ctx.strokeStyle = "rgba(0,0,0,0.35)";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+    }
+}
+
+// 物理碰撞，互相推开
+function collideBalls(){
+    for(let i = 0; i < balls.length; i++){
+        for(let j = i + 1; j < balls.length; j++){
+            const a = balls[i];
+            const b = balls[j];
+            if(!a.alive || !b.alive) continue;
+            const dx = a.x - b.x;
+            const dy = a.y - b.y;
+            const dist = Math.sqrt(dx*dx + dy*dy);
+            const minDist = a.r + b.r;
+            if(dist < minDist){
+                const overlap = minDist - dist;
+                const nx = dx / dist;
+                const ny = dy / dist;
+                a.x += nx * overlap * 0.5;
+                b.x -= nx * overlap * 0.5;
+                a.y += ny * overlap * 0.5;
+                b.y -= ny * overlap * 0.5;
+                const vx1 = a.vx;
+                const vy1 = a.vy;
+                a.vx = b.vx * 0.7;
+                a.vy = b.vy * 0.7;
+                b.vx = vx1 * 0.7;
+                b.vy = vy1 * 0.7;
+            }
+        }
+    }
+}
+
+//相同球体碰到自动合并
+function checkMerge(){
+    for(let i = 0; i < balls.length; i++){
+        for(let j = i + 1; j < balls.length; j++){
+            const a = balls[i];
+            const b = balls[j];
+            if(!a.alive || !b.alive) continue;
+            if(a.level !== b.level) continue;
+            if(a.level >= fruit.length -1) continue;
+            const dx = a.x - b.x;
+            const dy = a.y - b.y;
+            const dist = Math.sqrt(dx*dx + dy*dy);
+            if(dist < a.r + b.r + 2){
+                const nx = (a.x + b.x)/2;
+                const ny = (a.y + b.y)/2;
+                a.alive = false;
+                b.alive = false;
+                balls.push(new Fruit(nx, ny, a.level + 1));
+                score += (a.level+1)*10;
+                document.getElementById("score").innerText = "分数："+score;
+                soundMerge.currentTime=0;
+                soundMerge.play();
+                if(a.level+1 === fruit.length -1){
+                    soundBig.currentTime=0;
+                    soundBig.play();
+                }
+                balls = balls.filter(item=>item.alive);
+                return;
+            }
+        }
+    }
+}
+
+// ==== 预览球拖动逻辑（鼠标+触屏通用）====
+let previewX = 200;
+let dragging = false;
+
+canvas.onmousedown = function(e){
+    if(gameEnd) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const previewR = fruit[nextLevel].r;
+    const previewY = deadLineY - 60;
+    const dx = mx - previewX;
+    const dy = my - previewY;
+    if(Math.sqrt(dx*dx + dy*dy) < previewR){
+        dragging = true;
+    }
+}
+
+canvas.onmousemove = function(e){
+    if(!dragging || gameEnd) return;
+    const rect = canvas.getBoundingClientRect();
+    previewX = e.clientX - rect.left;
+    const previewR = fruit[nextLevel].r;
+    previewX = Math.max(wall.left + previewR, Math.min(wall.right - previewR, previewX));
+}
+
+canvas.onmouseup = function(e){
+    if(!dragging || gameEnd) return;
+    dragging = false;
+    balls.push(new Fruit(previewX, deadLineY - 40, nextLevel));
+    soundDrop.currentTime=0;
+    soundDrop.play();
+    nextLevel = Math.floor(Math.random() *3);
+    previewX = 200;
+}
+
+// ========== 手机触屏适配 ==========
+function addTouchSupport(el){
+    el.addEventListener('touchstart', function(e){
+        e.preventDefault();
+        const touch = e.touches[0];
+        const evt = new MouseEvent('mousedown', {
+            clientX: touch.clientX,
+            clientY: touch.clientY
+        });
+        el.dispatchEvent(evt);
+    }, {passive:false});
+
+    el.addEventListener('touchmove', function(e){
+        e.preventDefault();
+        const touch = e.touches[0];
+        const evt = new MouseEvent('mousemove', {
+            clientX: touch.clientX,
+            clientY: touch.clientY
+        });
+        el.dispatchEvent(evt);
+    }, {passive:false});
+
+    el.addEventListener('touchend', function(e){
+        e.preventDefault();
+        const evt = new MouseEvent('mouseup', {});
+        el.dispatchEvent(evt);
+    }, {passive:false});
+}
+addTouchSupport(canvas);
+
+// 延时判定游戏结束
+function checkGameOver(){
+    let danger = false;
+    for(let b of balls){
+        if(b.y - b.r < deadLineY){
+            danger = true;
+            break;
+        }
+    }
+    if(danger){
+        overTimer +=1;
+        if(overTimer > 120){
+            gameEnd = true;
+            document.getElementById("gameOver").style.display = "block";
+            resetBtn.style.display = "block";
+        }
+    }else{
+        overTimer = 0;
+    }
+}
+
+resetBtn.onclick = ()=>{
+    balls = [];
+    score = 0;
+    gameEnd = false;
+    overTimer = 0;
+    nextLevel = Math.floor(Math.random() *3);
+    previewX = 200;
+    document.getElementById("score").innerText = "分数：0";
+    document.getElementById("gameOver").style.display = "none";
+    resetBtn.style.display = "none";
+}
+
+function loop(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    //死亡红线
+    ctx.strokeStyle="red";
+    ctx.lineWidth=3;
+    ctx.beginPath();
+    ctx.moveTo(0,deadLineY);
+    ctx.lineTo(400,deadLineY);
+    ctx.stroke();
+
+    for(let b of balls) b.update();
+    collideBalls();
+    checkMerge();
+
+    for(let b of balls) b.draw();
+
+    //绘制预览小球
+    const previewR = fruit[nextLevel].r;
+    const previewY = deadLineY - 60;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(previewX, previewY, previewR,0,Math.PI*2);
+    ctx.clip();
+    const previewImg = fruitImages[nextLevel];
+    if(previewImg && previewImg.complete){
+        ctx.drawImage(previewImg, previewX-previewR, previewY-previewR, previewR*2, previewR*2);
+    }else{
+        ctx.fillStyle="#aaa";ctx.fill();
+    }
+    ctx.restore();
+    ctx.beginPath();
+    ctx.arc(previewX, previewY, previewR,0,Math.PI*2);
+    ctx.strokeStyle="rgba(0,0,0,0.45)";
+    ctx.lineWidth=2;
+    ctx.stroke();
+
+    checkGameOver();
+    if(!gameEnd) requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+</body>
+</html>
